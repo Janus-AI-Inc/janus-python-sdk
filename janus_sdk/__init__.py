@@ -145,23 +145,6 @@ async def arun_simulations(
     judge_model: str = _DEFAULT_JUDGE_MODEL,
     judge_kwargs: Dict[str, Any] | None = None,
 ) -> List[dict]:
-    """Launch *num_simulations* concurrent conversations against Janus SaaS and return structured conversation data.
-
-    The returned list matches the shape produced by ``janus_backend.simulate.run_pipeline``::
-
-        [
-            {
-                "sim_id": 0,
-                "conv_id": "abc123",
-                "qa": [
-                    {"idx": 0, "q": "…", "a": "…"},
-                    {"idx": 1, "q": "…", "a": "…"},
-                    # …
-                ],
-            },
-            # …
-        ]
-    """
 
 
     column_width: int = 80  # Default column width for plain text logs
