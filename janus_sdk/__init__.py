@@ -228,15 +228,17 @@ async def arun_simulations(
                     agent = agent_factory()
 
                     def _log(role: str, text: str):
-                        if not debug:
+                        return # Completely disable Q/A output
+                        
+                        # Original code left here but unreachable
+                        if not debug or use_rich:  
                             return
                         
-                        if not use_rich:
-                            indent = " " * (sim_idx * column_width)
-                            prefix = f"{role}{sim_idx}: "
-                            snippet = text.replace("\n", " ")
-                            print(f"{indent}{prefix}{snippet}")
-                            print(f"{indent}{'-' * (column_width - 2)}")
+                        indent = " " * (sim_idx * column_width)
+                        prefix = f"{role}{sim_idx}: "
+                        snippet = text.replace("\n", " ")
+                        print(f"{indent}{prefix}{snippet}")
+                        print(f"{indent}{'-' * (column_width - 2)}")
 
                     # Start the conversation
                     conv_id, question = await client.start(context, goal)

@@ -19,16 +19,14 @@ classifiers = [
 
 # Runtime requirements
 dependencies = [
-  "httpx>=0.23,<1.0"
+  "httpx>=0.23,<1.0",
+  "openai>=1.0",
+  "python-dotenv>=1.0",
+  "rich>=13.0,<14.0"
 ]
 
 [project.optional-dependencies]
-rich = [
-  "rich>=13.0,<14.0"
-]
 examples = [
-  "openai>=1.0",
-  "python-dotenv>=1.0"
 ]
 
 [project.urls]
