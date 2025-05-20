@@ -3,7 +3,7 @@ name = "janus-python-sdk"
 version = "0.1.0"
 description = "Automatically stress-test your AI apps. Sign up for an api key at withjanus.com"
 authors = [
-  { name = "Janus AI", email = "opensource@janus.ai" }
+  { name = "Janus AI", email = "team@withjanus.com" }
 ]
 readme = "README.md"
 requires-python = ">=3.9"
