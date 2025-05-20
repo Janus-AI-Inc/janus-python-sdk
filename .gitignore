@@ -7,3 +7,11 @@ __pycache__
 *.pyw
 *.pyz
 *.pywz
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# PyPI credentials
+.pypirc
