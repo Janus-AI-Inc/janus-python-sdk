@@ -7,7 +7,7 @@ authors = [
 ]
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = "MIT"
 keywords = ["janus", "sdk", "api", "http", "async", "ai"]
 classifiers = [
   "Programming Language :: Python",
