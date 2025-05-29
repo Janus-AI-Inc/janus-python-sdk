@@ -18,6 +18,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tup
 
 import httpx
 from httpx import AsyncHTTPTransport, Timeout
+import json
 
 # OpenTelemetry imports for tracing
 try:
@@ -201,7 +202,8 @@ def _create_context_aware_agent(
     original_agent_factory: Callable, 
     conv_id: str, 
     sim_idx: int, 
-    simulation_id: str
+    simulation_id: str,
+    persona_kwargs: Optional[Dict[str, str]] = None
 ) -> Callable:
     """Create an agent wrapper that injects conversation context into traces."""
     
@@ -281,20 +283,25 @@ class JanusClient:
             self._client = _client
             self._owns_client = False
 
-    async def start(self, context: str, goal: str) -> Tuple[str, str]:
+    async def start(self, context: str, goal: str, custom_profile: Optional[str] = None) -> Tuple[str, str]:
         """Start a new conversation.
         
         Args:
             context: Context for the conversation
             goal: Goal for the conversation
+            custom_profile: Optional JSON string representing a custom user persona/profile
             
         Returns:
             Tuple of (conversation_id, first_question)
         """
-        resp = await self._client.post(f"{self._base}/conv", json={
+        payload = {
             "context": context,
             "goal": goal,
-        })
+        }
+        if custom_profile is not None:
+            payload["custom_profile"] = custom_profile
+
+        resp = await self._client.post(f"{self._base}/conv", json=payload)
         
         if resp.status_code != 200:
             self._log_error("start", resp)
@@ -373,6 +380,7 @@ async def arun_simulations(
     judge_model: str = _DEFAULT_JUDGE_MODEL,
     judge_kwargs: Optional[Dict[str, Any]] = None,
     auto_init_tracing: bool = True,
+    persona_kwargs: Optional[Dict[str, str]] = None,
 ) -> List[dict]:
     """Run multiple AI agent simulations asynchronously.
     
@@ -385,6 +393,7 @@ async def arun_simulations(
         context: Context for conversations (default: generic testing context)
         goal: Goal for conversations (default: generic evaluation goal)
         rules: Rules for evaluation (optional)
+        persona_kwargs: stringified-JSON kwargs passed to every agent turn and serialised to the backend as a custom profile (optional)
         
     Returns:
         List of simulation results
@@ -446,10 +455,11 @@ async def arun_simulations(
                     client = JanusClient(base_url, api_key, _client=session)
                     
                     # Start conversation
-                    conv_id, question = await client.start(context, goal)
+                    custom_profile = json.dumps(persona_kwargs) if persona_kwargs else None
+                    conv_id, question = await client.start(context, goal, custom_profile=custom_profile)
                     
                     # Create context-aware agent
-                    agent = _create_context_aware_agent(target_agent, conv_id, sim_idx, simulation_id)()
+                    agent = _create_context_aware_agent(target_agent, conv_id, sim_idx, simulation_id, persona_kwargs)()
                     
                     qa_pairs = []
                     
@@ -673,6 +683,7 @@ def run_simulations(
     context: Optional[str] = None,
     goal: Optional[str] = None,
     rules: Optional[Sequence[str]] = None,
+    persona_kwargs: Optional[Dict[str, str]] = None,
 ):
     """Run multiple AI agent simulations synchronously.
     
@@ -687,6 +698,7 @@ def run_simulations(
         context: Context for conversations (default: generic testing context)
         goal: Goal for conversations (default: generic evaluation goal)
         rules: Rules for evaluation (optional)
+        persona_kwargs: stringified-JSON kwargs passed to every agent turn and serialised to the backend as a custom profile (optional)
         
     Returns:
         List of simulation results
@@ -704,6 +716,7 @@ def run_simulations(
                 context=context,
                 goal=goal,
                 rules=rules,
+                persona_kwargs=persona_kwargs,
             )
         )
     else:
@@ -717,5 +730,6 @@ def run_simulations(
                 context=context,
                 goal=goal,
                 rules=rules,
+                persona_kwargs=persona_kwargs,
             )
         )
