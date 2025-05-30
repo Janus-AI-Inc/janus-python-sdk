@@ -212,8 +212,7 @@ def _create_context_aware_agent(
         
         async def context_injected_agent(prompt: str) -> str:
             if not _HAS_OTEL:
-                return await _maybe_await(original_agent(prompt))
-                
+                return await _maybe_await(original_agent(prompt, **(persona_kwargs or {})))
             # Set conversation context in baggage
             ctx = baggage.set_baggage("conv_id", conv_id)
             ctx = baggage.set_baggage("janus_simulation", "true", ctx)
