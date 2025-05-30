@@ -242,8 +242,9 @@ def _create_context_aware_agent(
                     span.set_attribute("janus.turn_idx", int(turn_idx))
                 
                 # Execute agent
-                result = await _maybe_await(original_agent(prompt))
-                
+                result = await _maybe_await(
+    original_agent(prompt, **(persona_kwargs or {}))
+)
                 # Record response
                 truncated_response = result[:200] + "..." if len(result) > 200 else result
                 span.set_attribute("agent.response", truncated_response)
