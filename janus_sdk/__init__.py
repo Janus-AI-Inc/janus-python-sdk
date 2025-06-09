@@ -15,6 +15,8 @@ import os
 import time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
+from datetime import datetime
+import tiktoken
 
 import httpx
 from httpx import AsyncHTTPTransport, Timeout
@@ -56,6 +58,13 @@ MAX_PARALLEL_SIMS = int(os.getenv("JANUS_MAX_PARALLEL_SIMS", "20"))
 _TRACING_INITIALIZED = False
 _TRACES_ENDPOINT: Optional[str] = None
 
+_TOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
+
+def _count_tokens(text):
+    try:
+        return len(_TOKEN_ENCODER.encode(text or ""))
+    except Exception:
+        return 0
 
 def init_tracing(base_url: str, api_key: str) -> None:
     """Initialize OpenTelemetry tracing for the Janus SDK.
@@ -456,34 +465,69 @@ async def arun_simulations(
                     
                     # Start conversation
                     custom_profile = json.dumps(persona_kwargs) if persona_kwargs else None
+                    question_start_timestamp = datetime.utcnow()
+                    question_start = time.perf_counter()
                     conv_id, question = await client.start(context, goal, custom_profile=custom_profile)
+                    question_end = time.perf_counter()
+                    question_end_timestamp = datetime.utcnow()
+                    question_generation_time = question_end - question_start
                     
                     # Create context-aware agent
                     agent = _create_context_aware_agent(target_agent, conv_id, sim_idx, simulation_id, persona_kwargs)()
                     
                     qa_pairs = []
                     
+                    # Time the initial question
+                    qa_pairs.append({
+                        "idx": 0,
+                        "q": question,
+                        "a": "",
+                        "agent_metrics": {
+                            "question_start_timestamp": question_start_timestamp.isoformat(),
+                            "question_end_timestamp": question_end_timestamp.isoformat(),
+                            "answer_start_timestamp": "",
+                            "answer_end_timestamp": "",
+                            "question_generation_time": question_generation_time,
+                            "answer_generation_time": 0.0,
+                            "question_tokens": _count_tokens(question),
+                            "answer_tokens": 0,
+                        }
+                    })
+                    
                     # Run conversation turns
                     for turn_idx in range(max_turns):
-                        # Set turn context for tracing
-                        if _HAS_OTEL:
-                            ctx = baggage.set_baggage("turn_idx", str(turn_idx))
-                            truncated_question = question[:100] + "..." if len(question) > 100 else question
-                            ctx = baggage.set_baggage("turn_question", truncated_question, ctx)
-                            otel_context.attach(ctx)
-                        
-                        # Get agent response
+                        answer_start_timestamp = datetime.utcnow()
+                        answer_start = time.perf_counter()
                         answer = await _maybe_await(agent(question))
+                        answer_end = time.perf_counter()
+                        answer_end_timestamp = datetime.utcnow()
+                        answer_generation_time = answer_end - answer_start
                         
-                        # Record Q&A pair
+                        # Track next question timing
+                        next_question_start_timestamp = datetime.utcnow()
+                        next_question_start = time.perf_counter()
+                        next_question = await client.turn(conv_id, answer)
+                        next_question_end = time.perf_counter()
+                        next_question_end_timestamp = datetime.utcnow()
+                        question_generation_time = next_question_end - next_question_start
+                        
                         qa_pairs.append({
-                            "idx": turn_idx,
+                            "idx": turn_idx + 1,  # +1 because initial question is idx 0
                             "q": question,
                             "a": answer,
+                            "agent_metrics": {
+                                "question_start_timestamp": next_question_start_timestamp.isoformat(),
+                                "question_end_timestamp": next_question_end_timestamp.isoformat(),
+                                "answer_start_timestamp": answer_start_timestamp.isoformat(),
+                                "answer_end_timestamp": answer_end_timestamp.isoformat(),
+                                "question_generation_time": question_generation_time,
+                                "answer_generation_time": answer_generation_time,
+                                "question_tokens": _count_tokens(question),
+                                "answer_tokens": _count_tokens(answer),
+                            }
                         })
                         
-                        # Get next question
-                        question = await client.turn(conv_id, answer)
+                        question = next_question
                     
                     # Submit transcript with simulation_id
                     try:

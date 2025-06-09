@@ -15,3 +15,4 @@ build/
 
 # PyPI credentials
 .pypirc
+ex.py
