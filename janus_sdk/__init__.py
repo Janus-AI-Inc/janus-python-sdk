@@ -477,23 +477,6 @@ async def arun_simulations(
                     
                     qa_pairs = []
                     
-                    # Time the initial question
-                    qa_pairs.append({
-                        "idx": 0,
-                        "q": question,
-                        "a": "",
-                        "agent_metrics": {
-                            "question_start_timestamp": question_start_timestamp.isoformat(),
-                            "question_end_timestamp": question_end_timestamp.isoformat(),
-                            "answer_start_timestamp": "",
-                            "answer_end_timestamp": "",
-                            "question_generation_time": question_generation_time,
-                            "answer_generation_time": 0.0,
-                            "question_tokens": _count_tokens(question),
-                            "answer_tokens": 0,
-                        }
-                    })
-                    
                     # Run conversation turns
                     for turn_idx in range(max_turns):
                         answer_start_timestamp = datetime.utcnow()
@@ -512,7 +495,7 @@ async def arun_simulations(
                         question_generation_time = next_question_end - next_question_start
                         
                         qa_pairs.append({
-                            "idx": turn_idx + 1,  # +1 because initial question is idx 0
+                            "idx": turn_idx,
                             "q": question,
                             "a": answer,
                             "agent_metrics": {
