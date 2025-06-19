@@ -114,68 +114,143 @@ def track(func: Callable) -> Callable:
     - Measures execution time
     - Links to parent traces
     """
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        if not _HAS_OTEL or not _TRACING_INITIALIZED:
-            return func(*args, **kwargs)
+    
+    # Check if the function is async
+    if inspect.iscoroutinefunction(func):
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            if not _HAS_OTEL or not _TRACING_INITIALIZED:
+                return await func(*args, **kwargs)
+            
+            tracer = trace.get_tracer(__name__)
+            span_name = f"{func.__name__}_operation"
+            
+            # Get parent span BEFORE creating new span
+            parent_span = trace.get_current_span()
+            parent_trace_id = None
+            if parent_span and parent_span.is_recording():
+                parent_trace_id = parent_span.get_span_context().trace_id
+            
+            with tracer.start_as_current_span(span_name) as span:
+                start_time = time.perf_counter()
+                
+                # Set basic function attributes
+                span.set_attribute("function.name", func.__name__)
+                
+                # Get conversation context from baggage
+                conv_id = baggage.get_baggage("conv_id")
+                simulation_id = baggage.get_baggage("simulation_id")
+                is_simulation = baggage.get_baggage("janus_simulation") == "true"
+                
+                if conv_id:
+                    span.set_attribute("conversation.id", conv_id)
+                    span.set_attribute("janus.conversation_id", conv_id)
+                
+                if is_simulation:
+                    span.set_attribute("janus.simulation", True)
+                
+                if simulation_id:
+                    span.set_attribute("janus.simulation_id", simulation_id)
+                
+                # Link to parent trace using the saved parent_trace_id
+                if parent_trace_id:
+                    span.set_attribute("trace.id", f"{parent_trace_id:032x}")
+                    span.set_attribute("trace.correlation", True)
+                
+                # Capture function arguments
+                _capture_function_inputs(span, func, args, kwargs)
+                
+                try:
+                    result = await func(*args, **kwargs)
+                    
+                    # Record success metrics
+                    duration_ms = (time.perf_counter() - start_time) * 1000
+                    span.set_attribute("function.duration_ms", round(duration_ms, 3))
+                    span.set_attribute("function.success", True)
+                    
+                    # Capture output
+                    _capture_function_output(span, result)
+                    
+                    return result
+                    
+                except Exception as e:
+                    # Record failure metrics
+                    duration_ms = (time.perf_counter() - start_time) * 1000
+                    span.set_attribute("function.duration_ms", round(duration_ms, 3))
+                    span.set_attribute("function.success", False)
+                    span.set_attribute("function.error", str(e))
+                    span.set_attribute("function.error_type", type(e).__name__)
+                    raise
         
-        tracer = trace.get_tracer(__name__)
-        span_name = f"{func.__name__}_operation"
+        return async_wrapper
+    
+    else:
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            if not _HAS_OTEL or not _TRACING_INITIALIZED:
+                return func(*args, **kwargs)
+            
+            tracer = trace.get_tracer(__name__)
+            span_name = f"{func.__name__}_operation"
+            
+            # Get parent span BEFORE creating new span
+            parent_span = trace.get_current_span()
+            parent_trace_id = None
+            if parent_span and parent_span.is_recording():
+                parent_trace_id = parent_span.get_span_context().trace_id
+            
+            with tracer.start_as_current_span(span_name) as span:
+                start_time = time.perf_counter()
+                
+                # Set basic function attributes
+                span.set_attribute("function.name", func.__name__)
+                
+                # Get conversation context from baggage
+                conv_id = baggage.get_baggage("conv_id")
+                simulation_id = baggage.get_baggage("simulation_id")
+                is_simulation = baggage.get_baggage("janus_simulation") == "true"
+                
+                if conv_id:
+                    span.set_attribute("conversation.id", conv_id)
+                    span.set_attribute("janus.conversation_id", conv_id)
+                
+                if is_simulation:
+                    span.set_attribute("janus.simulation", True)
+                
+                if simulation_id:
+                    span.set_attribute("janus.simulation_id", simulation_id)
+                
+                # Link to parent trace using the saved parent_trace_id
+                if parent_trace_id:
+                    span.set_attribute("trace.id", f"{parent_trace_id:032x}")
+                    span.set_attribute("trace.correlation", True)
+                
+                # Capture function arguments
+                _capture_function_inputs(span, func, args, kwargs)
+                
+                try:
+                    result = func(*args, **kwargs)
+                    
+                    # Record success metrics
+                    duration_ms = (time.perf_counter() - start_time) * 1000
+                    span.set_attribute("function.duration_ms", round(duration_ms, 3))
+                    span.set_attribute("function.success", True)
+                    
+                    # Capture output
+                    _capture_function_output(span, result)
+                    
+                    return result
+                    
+                except Exception as e:
+                    # Record failure metrics
+                    duration_ms = (time.perf_counter() - start_time) * 1000
+                    span.set_attribute("function.duration_ms", round(duration_ms, 3))
+                    span.set_attribute("function.success", False)
+                    span.set_attribute("function.error", str(e))
+                    span.set_attribute("function.error_type", type(e).__name__)
+                    raise
         
-        with tracer.start_as_current_span(span_name) as span:
-            start_time = time.perf_counter()
-            
-            # Set basic function attributes
-            span.set_attribute("function.name", func.__name__)
-            
-            # Get conversation context from baggage
-            conv_id = baggage.get_baggage("conv_id")
-            simulation_id = baggage.get_baggage("simulation_id")
-            is_simulation = baggage.get_baggage("janus_simulation") == "true"
-            
-            if conv_id:
-                span.set_attribute("conversation.id", conv_id)
-                span.set_attribute("janus.conversation_id", conv_id)
-            
-            if is_simulation:
-                span.set_attribute("janus.simulation", True)
-            
-            if simulation_id:
-                span.set_attribute("janus.simulation_id", simulation_id)
-            
-            # Link to parent trace
-            current_span = trace.get_current_span()
-            if current_span:
-                trace_id = current_span.get_span_context().trace_id
-                span.set_attribute("trace.id", f"{trace_id:032x}")
-                span.set_attribute("trace.correlation", True)
-            
-            # Capture function arguments
-            _capture_function_inputs(span, func, args, kwargs)
-            
-            try:
-                result = func(*args, **kwargs)
-                
-                # Record success metrics
-                duration_ms = (time.perf_counter() - start_time) * 1000
-                span.set_attribute("function.duration_ms", round(duration_ms, 3))
-                span.set_attribute("function.success", True)
-                
-                # Capture output
-                _capture_function_output(span, result)
-                
-                return result
-                
-            except Exception as e:
-                # Record failure metrics
-                duration_ms = (time.perf_counter() - start_time) * 1000
-                span.set_attribute("function.duration_ms", round(duration_ms, 3))
-                span.set_attribute("function.success", False)
-                span.set_attribute("function.error", str(e))
-                span.set_attribute("function.error_type", type(e).__name__)
-                raise
-                
-    return wrapper
+        return sync_wrapper
 
 
 def _capture_function_inputs(span, func: Callable, args: tuple, kwargs: dict) -> None:
@@ -222,43 +297,51 @@ def _create_context_aware_agent(
         async def context_injected_agent(prompt: str) -> str:
             if not _HAS_OTEL:
                 return await _maybe_await(original_agent(prompt, **(persona_kwargs or {})))
+            
+            # Save current context
+            previous_ctx = otel_context.get_current()
+            
             # Set conversation context in baggage
-            ctx = baggage.set_baggage("conv_id", conv_id)
+            ctx = baggage.set_baggage("conv_id", conv_id, previous_ctx)
             ctx = baggage.set_baggage("janus_simulation", "true", ctx)
             ctx = baggage.set_baggage("simulation_id", simulation_id, ctx)
             ctx = baggage.set_baggage("simulation_idx", str(sim_idx), ctx)
-            otel_context.attach(ctx)
+            token = otel_context.attach(ctx)
             
-            # Create parent span for agent interaction
-            tracer = trace.get_tracer("janus_sdk")
-            with tracer.start_as_current_span("janus_agent_interaction") as span:
-                # Set conversation attributes
-                span.set_attribute("conversation.id", conv_id)
-                span.set_attribute("janus.conversation_id", conv_id)
-                span.set_attribute("janus.simulation", True)
-                span.set_attribute("janus.simulation_id", simulation_id)
-                span.set_attribute("janus.simulation_idx", sim_idx)
-                
-                # Truncate prompt for span attribute
-                truncated_prompt = prompt[:200] + "..." if len(prompt) > 200 else prompt
-                span.set_attribute("agent.prompt", truncated_prompt)
-                
-                # Get turn context if available
-                turn_idx = baggage.get_baggage("turn_idx")
-                if turn_idx is not None:
-                    span.set_attribute("conversation.turn_idx", int(turn_idx))
-                    span.set_attribute("janus.turn_idx", int(turn_idx))
-                
-                # Execute agent
-                result = await _maybe_await(
-    original_agent(prompt, **(persona_kwargs or {}))
-)
-                # Record response
-                truncated_response = result[:200] + "..." if len(result) > 200 else result
-                span.set_attribute("agent.response", truncated_response)
-                span.set_attribute("agent.success", True)
-                
-                return result
+            try:
+                # Create parent span for agent interaction
+                tracer = trace.get_tracer("janus_sdk")
+                with tracer.start_as_current_span("janus_agent_interaction") as span:
+                    # Set conversation attributes
+                    span.set_attribute("conversation.id", conv_id)
+                    span.set_attribute("janus.conversation_id", conv_id)
+                    span.set_attribute("janus.simulation", True)
+                    span.set_attribute("janus.simulation_id", simulation_id)
+                    span.set_attribute("janus.simulation_idx", sim_idx)
+                    
+                    # Truncate prompt for span attribute
+                    truncated_prompt = prompt[:200] + "..." if len(prompt) > 200 else prompt
+                    span.set_attribute("agent.prompt", truncated_prompt)
+                    
+                    # Get turn context if available
+                    turn_idx = baggage.get_baggage("turn_idx")
+                    if turn_idx is not None:
+                        span.set_attribute("conversation.turn_idx", int(turn_idx))
+                        span.set_attribute("janus.turn_idx", int(turn_idx))
+                    
+                    # Execute agent
+                    result = await _maybe_await(
+        original_agent(prompt, **(persona_kwargs or {}))
+    )
+                    # Record response
+                    truncated_response = result[:200] + "..." if len(result) > 200 else result
+                    span.set_attribute("agent.response", truncated_response)
+                    span.set_attribute("agent.success", True)
+                    
+                    return result
+            finally:
+                # Always detach context to prevent bleed
+                otel_context.detach(token)
         
         return context_injected_agent
     
