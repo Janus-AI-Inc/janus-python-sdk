@@ -48,7 +48,7 @@ __all__ = ["run_simulations", "track"]
 
 # Configuration
 _log = logging.getLogger(__name__)
-_DEFAULT_BASE_URL = "https://janus-backend-production.up.railway.app"
+_DEFAULT_BASE_URL = "https://api.withjanus.com"
 _DEFAULT_CONTEXT = "You are testing an AI agent in a conversational scenario."
 _DEFAULT_GOAL = "Evaluate the agent's performance through natural conversation."
 _DEFAULT_JUDGE_MODEL = os.getenv("JANUS_JUDGE_MODEL", "openai/gpt-4.1-mini")
