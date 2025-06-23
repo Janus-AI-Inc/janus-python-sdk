@@ -42,8 +42,8 @@ async def main():
     await janus.run_simulations(
         num_simulations=1,
         max_turns=3,
-        target_agent=lambda: MyAgent().runner,
-        api_key="",
+        target_agent=lambda: MyAgent().chat,
+        api_key=os.get("JANUS_API_KEY"),
     )
 
 if __name__ == "__main__":
