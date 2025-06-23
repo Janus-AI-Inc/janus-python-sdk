@@ -12,6 +12,7 @@ import functools
 import inspect
 import logging
 import os
+import threading
 import time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
@@ -523,8 +524,8 @@ async def arun_simulations(
         timeout=Timeout(3600),
     )
 
+    progress_ctx: Optional[dict] = None      # ← initialise early
     try:
-        # Set up progress tracking
         progress_ctx = _setup_progress_tracking(num_simulations)
         
         async def _run_single_simulation(sim_idx: int) -> dict:
@@ -639,7 +640,9 @@ async def arun_simulations(
 
 def _setup_progress_tracking(num_simulations: int):
     """Set up Rich progress tracking if available."""
-    if not _HAS_RICH:
+    # Rich's Live() may only run in the main thread / main TTY.
+    if (not _HAS_RICH
+            or threading.current_thread() is not threading.main_thread()):
         return None
         
     progress = Progress(
