@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+from dataclasses import dataclass
 import logging
 import os
 import threading
@@ -45,7 +46,17 @@ except ImportError:
     _HAS_RICH = False
     _console = None
 
-__all__ = ["run_simulations", "track"]
+__all__ = ["run_simulations", "track", "record_tool_event", "start_tool_event", "finish_tool_event", "ToolEventSpanHandle"]
+
+@dataclass
+class ToolEventSpanHandle:
+    """Handle for managing manual tool event spans.
+    
+    This dataclass stores the span reference and start time for manual tracing
+    operations that span multiple function calls.
+    """
+    span: Any  # OpenTelemetry Span object
+    start_time: float  # Start time from time.perf_counter()
 
 # Configuration
 _log = logging.getLogger(__name__)
@@ -281,6 +292,301 @@ def _capture_function_output(span, result: Any) -> None:
         str_result = str(result)
         truncated = str_result[:100] + "..." if len(str_result) > 100 else str_result
         span.set_attribute("function.output", truncated)
+
+
+def record_tool_event(
+    tool_name: str,
+    tool_input: Any = None,
+    tool_output: Any = None,
+    success: Optional[bool] = None,
+    duration_ms: Optional[float] = None,
+    error: Optional[Union[str, Exception]] = None
+) -> None:
+    """Record a tool event as a single span.
+    
+    This function creates and immediately finishes a span for a tool event,
+    capturing all relevant information in one call.
+    
+    Args:
+        tool_name: Name of the tool being traced
+        tool_input: Input data passed to the tool (will be truncated if too long)
+        tool_output: Output data returned by the tool (will be truncated if too long)
+        success: Whether the tool execution was successful (auto-computed from error if not provided)
+        duration_ms: Duration of the tool execution in milliseconds (auto-computed if not provided)
+        error: Error that occurred during tool execution (string or Exception)
+    
+    Examples:
+        # Basic usage
+        record_tool_event("search_api", "query: weather in NYC", "temperature: 72°F")
+        
+        # With error handling
+        try:
+            result = call_external_api()
+            record_tool_event("api_call", "request", result)
+        except Exception as e:
+            record_tool_event("api_call", "request", error=e)
+        
+        # With custom duration
+        start_time = time.perf_counter()
+        result = process_data()
+        duration = (time.perf_counter() - start_time) * 1000
+        record_tool_event("data_processing", "input_data", result, duration_ms=duration)
+    """
+    if not _HAS_OTEL or not _TRACING_INITIALIZED:
+        return
+    
+    try:
+        tracer = trace.get_tracer(__name__)
+        span_name = f"{tool_name}_operation"
+        
+        # Get parent span BEFORE creating new span
+        parent_span = trace.get_current_span()
+        parent_trace_id = None
+        if parent_span and parent_span.is_recording():
+            parent_trace_id = parent_span.get_span_context().trace_id
+        
+        with tracer.start_as_current_span(span_name) as span:
+            start_time = time.perf_counter()
+            
+            # Set basic function attributes
+            span.set_attribute("function.name", tool_name)
+            
+            # Get conversation context from baggage
+            conv_id = baggage.get_baggage("conv_id")
+            simulation_id = baggage.get_baggage("simulation_id")
+            is_simulation = baggage.get_baggage("janus_simulation") == "true"
+            
+            if conv_id:
+                span.set_attribute("conversation.id", conv_id)
+                span.set_attribute("janus.conversation_id", conv_id)
+            
+            if is_simulation:
+                span.set_attribute("janus.simulation", True)
+            
+            if simulation_id:
+                span.set_attribute("janus.simulation_id", simulation_id)
+            
+            # Link to parent trace using the saved parent_trace_id
+            if parent_trace_id:
+                span.set_attribute("trace.id", f"{parent_trace_id:032x}")
+                span.set_attribute("trace.correlation", True)
+            
+            # Set tool input
+            if tool_input is not None:
+                if isinstance(tool_input, (int, float, bool)):
+                    span.set_attribute("function.input", tool_input)
+                else:
+                    str_input = str(tool_input)
+                    truncated = str_input[:100] + "..." if len(str_input) > 100 else str_input
+                    span.set_attribute("function.input", truncated)
+            
+            # Set tool output
+            if tool_output is not None:
+                if isinstance(tool_output, (int, float, bool)):
+                    span.set_attribute("function.output", tool_output)
+                else:
+                    str_output = str(tool_output)
+                    truncated = str_output[:100] + "..." if len(str_output) > 100 else str_output
+                    span.set_attribute("function.output", truncated)
+            
+            # Compute or use provided duration
+            if duration_ms is None:
+                duration_ms = (time.perf_counter() - start_time) * 1000
+            
+            # Compute success if not provided
+            if success is None:
+                success = error is None
+            
+            # Set outcome attributes
+            span.set_attribute("function.duration_ms", round(duration_ms, 3))
+            span.set_attribute("function.success", success)
+            
+            if error is not None:
+                span.set_attribute("function.error", str(error))
+                span.set_attribute("function.error_type", type(error).__name__ if isinstance(error, Exception) else "str")
+    
+    except Exception as e:
+        # Don't let tracing errors break the application
+        _log.warning(f"Failed to record tool event for {tool_name}: {e}")
+
+
+def start_tool_event(
+    tool_name: str,
+    tool_input: Any = None
+) -> Optional[ToolEventSpanHandle]:
+    """Start a tool event span and return a handle for later completion.
+    
+    This function creates a span for a tool event that will be completed later
+    with finish_tool_event(). This is useful for tracing operations that span
+    multiple function calls or async operations.
+    
+    Args:
+        tool_name: Name of the tool being traced
+        tool_input: Input data passed to the tool (will be truncated if too long)
+    
+    Returns:
+        ToolEventSpanHandle containing the span and start time, or None if tracing is disabled
+    
+    Examples:
+        # Basic usage
+        handle = start_tool_event("database_query", "SELECT * FROM users")
+        # ... do database work ...
+        finish_tool_event(handle, "1000 rows returned")
+        
+        # With error handling
+        handle = start_tool_event("external_api", "api_request")
+        try:
+            result = call_api()
+            finish_tool_event(handle, result)
+        except Exception as e:
+            finish_tool_event(handle, error=e)
+        
+        # Check if tracing is enabled
+        handle = start_tool_event("tool_name", "input")
+        if handle is not None:
+            # Tracing is enabled, proceed with work
+            result = do_work()
+            finish_tool_event(handle, result)
+        else:
+            # Tracing is disabled, just do work without tracing
+            result = do_work()
+    """
+    if not _HAS_OTEL or not _TRACING_INITIALIZED:
+        return None
+    
+    try:
+        tracer = trace.get_tracer(__name__)
+        span_name = f"{tool_name}_operation"
+        
+        # Get parent span BEFORE creating new span
+        parent_span = trace.get_current_span()
+        parent_trace_id = None
+        if parent_span and parent_span.is_recording():
+            parent_trace_id = parent_span.get_span_context().trace_id
+        
+        # Create span (not as current span to avoid interfering with existing context)
+        span = tracer.start_span(span_name)
+        start_time = time.perf_counter()
+        
+        # Set basic function attributes
+        span.set_attribute("function.name", tool_name)
+        
+        # Get conversation context from baggage
+        conv_id = baggage.get_baggage("conv_id")
+        simulation_id = baggage.get_baggage("simulation_id")
+        is_simulation = baggage.get_baggage("janus_simulation") == "true"
+        turn_idx = baggage.get_baggage("turn_idx")
+        
+        if conv_id:
+            span.set_attribute("conversation.id", conv_id)
+            span.set_attribute("janus.conversation_id", conv_id)
+        
+        if is_simulation:
+            span.set_attribute("janus.simulation", True)
+        
+        if simulation_id:
+            span.set_attribute("janus.simulation_id", simulation_id)
+        
+        if turn_idx is not None:
+            span.set_attribute("conversation.turn_idx", int(turn_idx))
+            span.set_attribute("janus.turn_idx", int(turn_idx))
+        
+        # Link to parent trace using the saved parent_trace_id
+        if parent_trace_id:
+            span.set_attribute("trace.id", f"{parent_trace_id:032x}")
+            span.set_attribute("trace.correlation", True)
+        
+        # Set tool input
+        if tool_input is not None:
+            if isinstance(tool_input, (int, float, bool)):
+                span.set_attribute("function.input", tool_input)
+            else:
+                str_input = str(tool_input)
+                truncated = str_input[:100] + "..." if len(str_input) > 100 else str_input
+                span.set_attribute("function.input", truncated)
+        
+        return ToolEventSpanHandle(span=span, start_time=start_time)
+    
+    except Exception as e:
+        # Don't let tracing errors break the application
+        _log.warning(f"Failed to start tool event for {tool_name}: {e}")
+        return None
+
+
+def finish_tool_event(
+    handle: ToolEventSpanHandle,
+    tool_output: Any = None,
+    error: Optional[Union[str, Exception]] = None
+) -> None:
+    """Finish a tool event span started with start_tool_event().
+    
+    This function completes a span for a tool event, setting the final attributes
+    and ending the span. It should be called after the tool execution completes.
+    
+    Args:
+        handle: ToolEventSpanHandle returned from start_tool_event()
+        tool_output: Output data returned by the tool (will be truncated if too long)
+        error: Error that occurred during tool execution (string or Exception)
+    
+    Examples:
+        # Successful completion
+        handle = start_tool_event("data_processing", "input_data")
+        result = process_data()
+        finish_tool_event(handle, result)
+        
+        # Error completion
+        handle = start_tool_event("api_call", "request")
+        try:
+            result = call_api()
+            finish_tool_event(handle, result)
+        except Exception as e:
+            finish_tool_event(handle, error=e)
+        
+        # Safe handling of None handle (when tracing is disabled)
+        handle = start_tool_event("tool_name", "input")
+        finish_tool_event(handle, "output")  # Safe even if handle is None
+    """
+    if handle is None:
+        return
+    
+    try:
+        # Validate handle has required attributes
+        if not hasattr(handle, 'span') or not hasattr(handle, 'start_time'):
+            _log.warning("Invalid ToolEventSpanHandle provided to finish_tool_event")
+            return
+        
+        span = handle.span
+        start_time = handle.start_time
+        
+        # Calculate duration
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        
+        # Set tool output
+        if tool_output is not None:
+            if isinstance(tool_output, (int, float, bool)):
+                span.set_attribute("function.output", tool_output)
+            else:
+                str_output = str(tool_output)
+                truncated = str_output[:100] + "..." if len(str_output) > 100 else str_output
+                span.set_attribute("function.output", truncated)
+        
+        # Compute success
+        success = error is None
+        
+        # Set outcome attributes
+        span.set_attribute("function.duration_ms", round(duration_ms, 3))
+        span.set_attribute("function.success", success)
+        
+        if error is not None:
+            span.set_attribute("function.error", str(error))
+            span.set_attribute("function.error_type", type(error).__name__ if isinstance(error, Exception) else "str")
+        
+        # End the span
+        span.end()
+    
+    except Exception as e:
+        # Don't let tracing errors break the application
+        _log.warning(f"Failed to finish tool event: {e}")
 
 
 def _create_context_aware_agent(

@@ -1,13 +1,13 @@
 [project]
 name = "janus-python-sdk"
-version = "0.2.8"
+version = "0.2.9a3"
 description = "Automatically stress-test your AI apps. Sign up for an api key at withjanus.com"
 authors = [
   { name = "Janus AI", email = "team@withjanus.com" }
 ]
 readme = "README.md"
 requires-python = ">=3.9"
-license = "MIT"
+license = { file = "LICENSE" }
 keywords = ["janus", "sdk", "api", "http", "async", "ai"]
 classifiers = [
   "Programming Language :: Python",
@@ -39,12 +39,11 @@ Repository = "https://github.com/Janus-AI-Inc/janus-python-sdk"
 Issues = "https://github.com/Janus-AI-Inc/janus-python-sdk/issues"
 
 [build-system]
-requires = [
-  "setuptools>=61.0",
-  "wheel"
-]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["janus_sdk*"] 
+[tool.hatch.build.targets.wheel]
+packages = ["janus_sdk"]

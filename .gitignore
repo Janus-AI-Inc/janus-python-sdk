@@ -17,3 +17,4 @@ build/
 .pypirc
 ex.py
 async_ex.py
+example.py

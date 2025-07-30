@@ -49,3 +49,28 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 ``` 
+
+## Manual Tool Event Tracing
+
+For cases where you can't use the `@track` decorator (e.g., external tools, LangChain callbacks), you can manually trace tool events:
+
+```python
+from janus_sdk import record_tool_event, start_tool_event, finish_tool_event
+
+# One-shot tracing for simple operations
+record_tool_event("external_api", "request", "response")
+
+# Start/finish pattern for long-running operations
+handle = start_tool_event("database_query", "SELECT * FROM users")
+# ... do work ...
+finish_tool_event(handle, "1000 rows returned")
+
+# Error handling
+try:
+    result = call_external_api()
+    record_tool_event("api_call", "request", result)
+except Exception as e:
+    record_tool_event("api_call", "request", error=e)
+```
+
+The manual tracing functions automatically capture conversation context and link to parent traces, just like the `@track` decorator.
