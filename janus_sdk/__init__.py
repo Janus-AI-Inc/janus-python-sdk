@@ -16,7 +16,7 @@ import os
 import threading
 import time
 import uuid
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple, Union
 from datetime import datetime
 import tiktoken
 
@@ -46,7 +46,9 @@ except ImportError:
     _HAS_RICH = False
     _console = None
 
-__all__ = ["run_simulations", "track", "record_tool_event", "start_tool_event", "finish_tool_event", "ToolEventSpanHandle"]
+from .webhook_trigger import WebhookTrigger, create_webhook_target_agent
+
+__all__ = ["run_simulations", "track", "record_tool_event", "start_tool_event", "finish_tool_event", "ToolEventSpanHandle", "WebhookTrigger", "create_webhook_target_agent"]
 
 @dataclass
 class ToolEventSpanHandle:
