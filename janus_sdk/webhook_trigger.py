@@ -2,6 +2,7 @@ import httpx
 import asyncio
 import time
 from datetime import datetime
+from .multimodal import MultimodalOutput, FileAttachment
 
 class WebhookTrigger:
     def __init__(self, n8n_base_url: str, api_key: str):
@@ -93,15 +94,70 @@ async def create_webhook_target_agent(n8n_base_url: str, api_key: str, workflow_
     """Create a target agent function for use with run_simulations"""
     trigger = WebhookTrigger(n8n_base_url, api_key)
     
-    async def target_agent(simulation_idx: int) -> str:
+    async def target_agent(simulation_idx: int) -> MultimodalOutput:
         """Target agent that triggers N8N workflow via webhook"""
         result = await trigger.trigger_workflow(workflow_id, payload)
         
         if result["success"]:
-            # Extract the final data from N8N response
             final_data = result["final_result"].get("data", {})
-            return str(final_data)  # Convert to string for compatibility
+            execution_time = result["final_result"].get("execution_time")
+            status = result["final_result"].get("status")
+            
+            # Handle different output types from N8N
+            if isinstance(final_data, dict):
+                # Extract text summary if available
+                text_summary = final_data.get("summary") or final_data.get("message") or "Workflow completed successfully"
+                
+                # Extract files if available
+                files = []
+                if "files" in final_data:
+                    for file_data in final_data["files"]:
+                        if isinstance(file_data, dict) and "content" in file_data:
+                            files.append(FileAttachment(
+                                name=file_data.get("name", "file"),
+                                content=file_data["content"].encode() if isinstance(file_data["content"], str) else file_data["content"],
+                                mime_type=file_data.get("mime_type", "application/octet-stream"),
+                                size=len(file_data["content"])
+                            ))
+                
+                return MultimodalOutput(
+                    text=text_summary,
+                    json_data=final_data,
+                    files=files if files else None,
+                    metadata={
+                        "execution_time": execution_time,
+                        "status": status,
+                        "workflow_id": workflow_id,
+                        "simulation_idx": simulation_idx
+                    }
+                )
+            elif isinstance(final_data, str):
+                return MultimodalOutput(
+                    text=final_data,
+                    metadata={
+                        "execution_time": execution_time,
+                        "status": status,
+                        "workflow_id": workflow_id
+                    }
+                )
+            else:
+                return MultimodalOutput(
+                    text=str(final_data),
+                    json_data={"raw_output": final_data},
+                    metadata={
+                        "execution_time": execution_time,
+                        "status": status,
+                        "workflow_id": workflow_id
+                    }
+                )
         else:
-            return f"Error: {result['error']}"
+            return MultimodalOutput(
+                text=f"Error: {result['error']}",
+                metadata={
+                    "error": True,
+                    "workflow_id": workflow_id,
+                    "simulation_idx": simulation_idx
+                }
+            )
     
     return target_agent

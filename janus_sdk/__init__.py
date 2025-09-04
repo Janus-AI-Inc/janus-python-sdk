@@ -47,8 +47,13 @@ except ImportError:
     _console = None
 
 from .webhook_trigger import WebhookTrigger, create_webhook_target_agent
+from .multimodal import MultimodalOutput, FileAttachment
 
-__all__ = ["run_simulations", "track", "record_tool_event", "start_tool_event", "finish_tool_event", "ToolEventSpanHandle", "WebhookTrigger", "create_webhook_target_agent"]
+# Type definitions for multimodal support
+MultimodalAgent = Callable[[str], Awaitable[MultimodalOutput] | MultimodalOutput]
+MultimodalAgentFactory = Callable[[], MultimodalAgent]
+
+__all__ = ["run_simulations", "track", "record_tool_event", "start_tool_event", "finish_tool_event", "ToolEventSpanHandle", "WebhookTrigger", "create_webhook_target_agent", "MultimodalOutput", "FileAttachment"]
 
 @dataclass
 class ToolEventSpanHandle:
@@ -603,9 +608,10 @@ def _create_context_aware_agent(
     def enhanced_agent_factory():
         original_agent = original_agent_factory()
         
-        async def context_injected_agent(prompt: str) -> str:
+        async def context_injected_agent(prompt: str) -> MultimodalOutput:
             if not _HAS_OTEL:
-                return await _maybe_await(original_agent(prompt, **(persona_kwargs or {})))
+                raw_output = await _maybe_await(original_agent(prompt, **(persona_kwargs or {})))
+                return _normalize_agent_output(raw_output)
             
             # Save current context
             previous_ctx = otel_context.get_current()
@@ -639,15 +645,30 @@ def _create_context_aware_agent(
                         span.set_attribute("janus.turn_idx", int(turn_idx))
                     
                     # Execute agent
-                    result = await _maybe_await(
+                    raw_output = await _maybe_await(
         original_agent(prompt, **(persona_kwargs or {}))
     )
-                    # Record response
-                    truncated_response = result[:200] + "..." if len(result) > 200 else result
+                    
+                    # Normalize output to MultimodalOutput
+                    multimodal_output = _normalize_agent_output(raw_output)
+                    
+                    # Record response (use text for span attributes)
+                    response_text = multimodal_output.to_string()
+                    truncated_response = response_text[:200] + "..." if len(response_text) > 200 else response_text
                     span.set_attribute("agent.response", truncated_response)
                     span.set_attribute("agent.success", True)
                     
-                    return result
+                    # Add multimodal metadata to span
+                    if multimodal_output.text:
+                        span.set_attribute("agent.output.text_length", len(multimodal_output.text))
+                    if multimodal_output.json_data:
+                        span.set_attribute("agent.output.has_json", True)
+                    if multimodal_output.files:
+                        span.set_attribute("agent.output.file_count", len(multimodal_output.files))
+                    if multimodal_output.metadata:
+                        span.set_attribute("agent.output.has_metadata", True)
+                    
+                    return multimodal_output
             finally:
                 # Always detach context to prevent bleed
                 otel_context.detach(token)
@@ -765,9 +786,19 @@ async def _maybe_await(value):
     return value
 
 
+def _normalize_agent_output(output: Union[str, MultimodalOutput]) -> MultimodalOutput:
+    """Convert string output to MultimodalOutput for backward compatibility"""
+    if isinstance(output, str):
+        return MultimodalOutput.from_string(output)
+    elif isinstance(output, MultimodalOutput):
+        return output
+    else:
+        return MultimodalOutput.from_string(str(output))
+
+
 async def arun_simulations(
     *,
-    target_agent: Callable[[], Callable[[str], Awaitable[str] | str]],
+    target_agent: Union[MultimodalAgentFactory, Callable[[], Callable[[str], Awaitable[str] | str]]],
     api_key: str,
     num_simulations: int = 10,
     max_turns: int = 10,
@@ -873,15 +904,18 @@ async def arun_simulations(
                     for turn_idx in range(max_turns):
                         answer_start_timestamp = datetime.utcnow()
                         answer_start = time.perf_counter()
-                        answer = await _maybe_await(agent(question))
+                        multimodal_answer = await _maybe_await(agent(question))
                         answer_end = time.perf_counter()
                         answer_end_timestamp = datetime.utcnow()
                         answer_generation_time = answer_end - answer_start
                         
+                        # Convert to string for question generation (backward compatibility)
+                        answer_text = multimodal_answer.to_string()
+                        
                         # Track next question timing
                         next_question_start_timestamp = datetime.utcnow()
                         next_question_start = time.perf_counter()
-                        next_question = await client.turn(conv_id, answer)
+                        next_question = await client.turn(conv_id, answer_text)
                         next_question_end = time.perf_counter()
                         next_question_end_timestamp = datetime.utcnow()
                         question_generation_time = next_question_end - next_question_start
@@ -889,7 +923,7 @@ async def arun_simulations(
                         qa_pairs.append({
                             "idx": turn_idx,
                             "q": question,
-                            "a": answer,
+                            "a": multimodal_answer.to_dict(),  # Store full multimodal data
                             "agent_metrics": {
                                 "question_start_timestamp": next_question_start_timestamp.isoformat(),
                                 "question_end_timestamp": next_question_end_timestamp.isoformat(),
@@ -898,7 +932,14 @@ async def arun_simulations(
                                 "question_generation_time": question_generation_time,
                                 "answer_generation_time": answer_generation_time,
                                 "question_tokens": _count_tokens(question),
-                                "answer_tokens": _count_tokens(answer),
+                                "answer_tokens": _count_tokens(answer_text),
+                                "multimodal_metadata": {
+                                    "has_text": multimodal_answer.text is not None,
+                                    "has_json": multimodal_answer.json_data is not None,
+                                    "has_files": multimodal_answer.files is not None,
+                                    "file_count": len(multimodal_answer.files) if multimodal_answer.files else 0,
+                                    "has_metadata": multimodal_answer.metadata is not None
+                                }
                             }
                         })
                         
@@ -1096,7 +1137,7 @@ async def _get_hallucination_metrics(
 
 def run_simulations(
     *,
-    target_agent: Callable[[], Callable[[str], Awaitable[str] | str]],
+    target_agent: Union[MultimodalAgentFactory, Callable[[], Callable[[str], Awaitable[str] | str]]],
     api_key: str,
     num_simulations: int,
     max_turns: int,
