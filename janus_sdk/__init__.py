@@ -50,7 +50,7 @@ from .webhook_trigger import WebhookTrigger, create_webhook_target_agent
 from .multimodal import MultimodalOutput, FileAttachment
 
 # Type definitions for multimodal support
-MultimodalAgent = Callable[[str], Awaitable[MultimodalOutput] | MultimodalOutput]
+MultimodalAgent = Callable[[str], Union[Awaitable[MultimodalOutput], MultimodalOutput]]
 MultimodalAgentFactory = Callable[[], MultimodalAgent]
 
 __all__ = ["run_simulations", "track", "record_tool_event", "start_tool_event", "finish_tool_event", "ToolEventSpanHandle", "WebhookTrigger", "create_webhook_target_agent", "MultimodalOutput", "FileAttachment"]
@@ -1035,6 +1035,29 @@ def _cleanup_progress_tracking(progress_ctx):
         progress_ctx["live_ctx"].__exit__(None, None, None)
 
 
+def _extract_answer_text(answer_value: Any) -> str:
+    """Extract text from answer value (handles both string and MultimodalOutput dict).
+    
+    Args:
+        answer_value: Either a string or a dict (MultimodalOutput.to_dict() result)
+    
+    Returns:
+        String representation of the answer text
+    """
+    if isinstance(answer_value, dict):
+        # MultimodalOutput dict format: {"text": "...", "metadata": {...}, ...}
+        text = answer_value.get("text")
+        # Handle case where text key exists but is None
+        if text is not None:
+            return str(text)
+        else:
+            # Fallback to string representation of entire dict
+            return str(answer_value)
+    else:
+        # Already a string or other type - convert to string
+        return str(answer_value)
+
+
 async def _run_judges(
     results: List[dict],
     base_url: str, 
@@ -1048,18 +1071,21 @@ async def _run_judges(
     """Run judge evaluations on simulation results."""
     
     # Group answers by question for hallucination detection
+    # Extract text from MultimodalOutput dicts for comparison
     answers_by_question: Dict[str, List[str]] = {}
     for sim in results:
         for qa in sim["qa"]:
-            answers_by_question.setdefault(qa["q"], []).append(qa["a"])
+            answer_text = _extract_answer_text(qa["a"])
+            answers_by_question.setdefault(qa["q"], []).append(answer_text)
     
     # Rule-based judging
     if "rule" in enabled_judges:
         rule_tasks = []
         for sim in results:
             for qa in sim["qa"]:
+                answer_text = _extract_answer_text(qa["a"])
                 task = _submit_rule_judgment(
-                    client, base_url, qa["q"], qa["a"], sim["conv_id"],
+                    client, base_url, qa["q"], answer_text, sim["conv_id"],
                     rules, num_judges, judge_model, judge_kwargs
                 )
                 rule_tasks.append(task)
@@ -1074,8 +1100,13 @@ async def _run_judges(
         
         for sim in results:
             for qa in sim["qa"]:
-                peers = [a for a in answers_by_question.get(qa["q"], []) if a != qa["a"]]
-                task = _get_hallucination_metrics(client, base_url, qa["a"], peers)
+                answer_text = _extract_answer_text(qa["a"])
+                # Get peers (other answers to same question) as strings
+                peers = [
+                    peer_text for peer_text in answers_by_question.get(qa["q"], [])
+                    if peer_text != answer_text
+                ]
+                task = _get_hallucination_metrics(client, base_url, answer_text, peers)
                 hallu_tasks.append(task)
                 hallu_targets.append(qa)
         

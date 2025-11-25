@@ -1,6 +1,6 @@
 [project]
 name = "janus-python-sdk"
-version = "0.3.0"
+version = "0.3.1"
 description = "Automatically stress-test your AI apps. Sign up for an api key at withjanus.com"
 authors = [
   { name = "Janus AI", email = "team@withjanus.com" }
