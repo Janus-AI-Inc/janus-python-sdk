@@ -53,7 +53,23 @@ from .multimodal import MultimodalOutput, FileAttachment
 MultimodalAgent = Callable[[str], Union[Awaitable[MultimodalOutput], MultimodalOutput]]
 MultimodalAgentFactory = Callable[[], MultimodalAgent]
 
-__all__ = ["run_simulations", "track", "record_tool_event", "start_tool_event", "finish_tool_event", "ToolEventSpanHandle", "WebhookTrigger", "create_webhook_target_agent", "MultimodalOutput", "FileAttachment"]
+__all__ = ["run_simulations", "track", "record_tool_event", "start_tool_event", "finish_tool_event", "ToolEventSpanHandle", "WebhookTrigger", "create_webhook_target_agent", "MultimodalOutput", "FileAttachment", "JanusCreditsExhaustedError"]
+
+
+class JanusCreditsExhaustedError(RuntimeError):
+    """Raised when a Janus API call returns HTTP 402 because the user is out
+    of eval credits. Catch this to handle the out-of-credits case cleanly.
+
+    Attributes:
+        remaining: credits left on the account at the time of the failed call.
+        needed: credits the call required.
+        message: human-readable message from the server (also available via str(exc)).
+    """
+
+    def __init__(self, remaining: int, needed: int, message: str):
+        super().__init__(message)
+        self.remaining = remaining
+        self.needed = needed
 
 @dataclass
 class ToolEventSpanHandle:
@@ -724,10 +740,28 @@ class JanusClient:
             payload["custom_profile"] = custom_profile
 
         resp = await self._client.post(f"{self._base}/conv", json=payload)
-        
+
+        # Credit exhaustion must be raised as a clean exception, not a raw
+        # HTTPStatusError. Happens if the caller bypassed /run/start or if a
+        # concurrent batch drained the balance mid-run.
+        if resp.status_code == 402:
+            body = {}
+            try:
+                body = resp.json() or {}
+            except Exception:
+                pass
+            detail = body.get("detail") if isinstance(body, dict) else None
+            if not isinstance(detail, dict):
+                detail = {}
+            raise JanusCreditsExhaustedError(
+                remaining=int(detail.get("remaining", 0) or 0),
+                needed=int(detail.get("needed", 1) or 1),
+                message=str(detail.get("message", "Out of eval credits.")),
+            )
+
         if resp.status_code != 200:
             self._log_error("start", resp)
-        
+
         resp.raise_for_status()
         data = resp.json()
         return data["conv_id"], data["question"]
@@ -845,6 +879,43 @@ async def arun_simulations(
     simulation_id = uuid.uuid4().hex
     _log.info(f"Starting simulation batch with ID: {simulation_id}")
 
+    # Register run for status tracking + check credits upfront.
+    #
+    # /run/start is still "best-effort" for the status-tracking side (Supabase
+    # blip, transient network, etc.) — those get swallowed as before. BUT a 402
+    # from the credit gate is load-bearing: we must raise JanusCreditsExhaustedError
+    # immediately so the caller stops before running any simulations. The old
+    # blanket `except Exception` masked 402s, which meant the SDK would
+    # continue and every downstream /conv call would fail with a raw
+    # httpx.HTTPStatusError instead of a clean credits exception.
+    async with httpx.AsyncClient(
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        timeout=Timeout(10),
+    ) as init_client:
+        try:
+            resp = await init_client.post(
+                f"{base_url.rstrip('/')}/run/start",
+                json={"simulation_id": simulation_id, "total_tests": num_simulations},
+            )
+        except Exception:
+            _log.debug("Failed to register run start – status tracking may be unavailable")
+        else:
+            if resp.status_code == 402:
+                body = {}
+                try:
+                    body = resp.json() or {}
+                except Exception:
+                    pass
+                detail = body.get("detail") if isinstance(body, dict) else None
+                if not isinstance(detail, dict):
+                    detail = {}
+                raise JanusCreditsExhaustedError(
+                    remaining=int(detail.get("remaining", 0) or 0),
+                    needed=int(detail.get("needed", num_simulations) or num_simulations),
+                    message=str(detail.get("message", "Out of eval credits.")),
+                )
+            # Don't raise_for_status — other non-2xx are still best-effort.
+
     # Set up concurrency control
     sem = asyncio.Semaphore(MAX_PARALLEL_SIMS)
     
@@ -912,13 +983,24 @@ async def arun_simulations(
                         # Convert to string for question generation (backward compatibility)
                         answer_text = multimodal_answer.to_string()
                         
-                        # Track next question timing
-                        next_question_start_timestamp = datetime.utcnow()
-                        next_question_start = time.perf_counter()
-                        next_question = await client.turn(conv_id, answer_text)
-                        next_question_end = time.perf_counter()
-                        next_question_end_timestamp = datetime.utcnow()
-                        question_generation_time = next_question_end - next_question_start
+                        # Only get next question if not on the last turn
+                        # This avoids unnecessary LLM calls that cause timeouts
+                        is_last_turn = (turn_idx == max_turns - 1)
+                        
+                        if is_last_turn:
+                            # Last turn: skip getting next question to avoid timeout
+                            next_question = ""
+                            next_question_start_timestamp = datetime.utcnow()
+                            next_question_end_timestamp = datetime.utcnow()
+                            question_generation_time = 0.0
+                        else:
+                            # Track next question timing
+                            next_question_start_timestamp = datetime.utcnow()
+                            next_question_start = time.perf_counter()
+                            next_question = await client.turn(conv_id, answer_text)
+                            next_question_end = time.perf_counter()
+                            next_question_end_timestamp = datetime.utcnow()
+                            question_generation_time = next_question_end - next_question_start
                         
                         qa_pairs.append({
                             "idx": turn_idx,
@@ -942,6 +1024,10 @@ async def arun_simulations(
                                 }
                             }
                         })
+                        
+                        # Break if no next question (last turn or conversation ended)
+                        if not next_question:
+                            break
                         
                         question = next_question
                     
