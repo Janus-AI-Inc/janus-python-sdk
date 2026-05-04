@@ -87,7 +87,7 @@ _DEFAULT_BASE_URL = "https://api.withjanus.com"
 _DEFAULT_CONTEXT = "You are testing an AI agent in a conversational scenario."
 _DEFAULT_GOAL = "Evaluate the agent's performance through natural conversation."
 _DEFAULT_JUDGE_MODEL = os.getenv("JANUS_JUDGE_MODEL", "openai/gpt-4.1-mini")
-MAX_PARALLEL_SIMS = int(os.getenv("JANUS_MAX_PARALLEL_SIMS", "20"))
+MAX_PARALLEL_SIMS = int(os.getenv("JANUS_MAX_PARALLEL_SIMS", "50"))
 
 # Global tracing state
 _TRACING_INITIALIZED = False
