@@ -53,7 +53,7 @@ from .multimodal import MultimodalOutput, FileAttachment
 MultimodalAgent = Callable[[str], Union[Awaitable[MultimodalOutput], MultimodalOutput]]
 MultimodalAgentFactory = Callable[[], MultimodalAgent]
 
-__all__ = ["run_simulations", "track", "record_tool_event", "start_tool_event", "finish_tool_event", "ToolEventSpanHandle", "WebhookTrigger", "create_webhook_target_agent", "MultimodalOutput", "FileAttachment", "JanusCreditsExhaustedError"]
+__all__ = ["run_simulations", "arun_simulations", "list_templates", "alist_templates", "track", "record_tool_event", "start_tool_event", "finish_tool_event", "ToolEventSpanHandle", "WebhookTrigger", "create_webhook_target_agent", "MultimodalOutput", "FileAttachment", "JanusCreditsExhaustedError"]
 
 
 class JanusCreditsExhaustedError(RuntimeError):
@@ -840,6 +840,8 @@ async def arun_simulations(
     context: Optional[str] = None,
     goal: Optional[str] = None,
     rules: Optional[Sequence[str]] = None,
+    template_id: Optional[str] = None,
+    simulation_id: Optional[str] = None,
     # Internal parameters (hidden from main API)
     enabled_judges: Optional[Sequence[str]] = ("rule",),
     num_judges: int = 3,
@@ -849,7 +851,7 @@ async def arun_simulations(
     persona_kwargs: Optional[Dict[str, str]] = None,
 ) -> List[dict]:
     """Run multiple AI agent simulations asynchronously.
-    
+
     Args:
         target_agent: Factory function that creates agent instances
         api_key: Your Janus API key for authentication
@@ -859,8 +861,13 @@ async def arun_simulations(
         context: Context for conversations (default: generic testing context)
         goal: Goal for conversations (default: generic evaluation goal)
         rules: Rules for evaluation (optional)
+        template_id: Pin a specific profile_templates row for this run (optional).
+            When omitted, the backend falls back to the user's is_active=true row.
+            Use list_templates() to discover available ids.
+        simulation_id: Reuse an existing simulation id to roll up multiple
+            arun_simulations calls into one logical batch (optional).
         persona_kwargs: stringified-JSON kwargs passed to every agent turn and serialised to the backend as a custom profile (optional)
-        
+
     Returns:
         List of simulation results
     """
@@ -874,10 +881,21 @@ async def arun_simulations(
     # Initialize tracing if needed
     if auto_init_tracing and not _TRACING_INITIALIZED:
         init_tracing(base_url, api_key)
-    
-    # Generate simulation ID
-    simulation_id = uuid.uuid4().hex
+
+    # Generate simulation ID (reuse caller-provided id for multi-template rollup)
+    simulation_id = simulation_id or uuid.uuid4().hex
     _log.info(f"Starting simulation batch with ID: {simulation_id}")
+
+    # Shared header set: Authorization on every request, plus an optional
+    # X-Janus-Template-Id that pins which profile_templates row the backend
+    # resolves for /conv, /judge, and /conversation. The header is dropped
+    # automatically when template_id is None (today's behavior).
+    _headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    if template_id:
+        _headers["X-Janus-Template-Id"] = template_id
 
     # Register run for status tracking + check credits upfront.
     #
@@ -889,7 +907,7 @@ async def arun_simulations(
     # continue and every downstream /conv call would fail with a raw
     # httpx.HTTPStatusError instead of a clean credits exception.
     async with httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        headers=_headers,
         timeout=Timeout(10),
     ) as init_client:
         try:
@@ -921,10 +939,7 @@ async def arun_simulations(
     
     # Shared client for judge calls
     shared_client = httpx.AsyncClient(
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
+        headers=_headers,
         limits=httpx.Limits(
             max_connections=MAX_PARALLEL_SIMS,
             max_keepalive_connections=MAX_PARALLEL_SIMS,
@@ -943,10 +958,7 @@ async def arun_simulations(
             async with sem:
                 transport = AsyncHTTPTransport(retries=3)
                 async with httpx.AsyncClient(
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
+                    headers=_headers,
                     limits=httpx.Limits(
                         max_connections=5,
                         max_keepalive_connections=5,
@@ -1262,12 +1274,14 @@ def run_simulations(
     context: Optional[str] = None,
     goal: Optional[str] = None,
     rules: Optional[Sequence[str]] = None,
+    template_id: Optional[str] = None,
+    simulation_id: Optional[str] = None,
     persona_kwargs: Optional[Dict[str, str]] = None,
 ):
     """Run multiple AI agent simulations synchronously.
-    
+
     This is a simplified API that uses sensible defaults for most parameters.
-    
+
     Args:
         target_agent: Factory function that creates agent instances
         api_key: Your Janus API key for authentication
@@ -1277,8 +1291,12 @@ def run_simulations(
         context: Context for conversations (default: generic testing context)
         goal: Goal for conversations (default: generic evaluation goal)
         rules: Rules for evaluation (optional)
+        template_id: Pin a specific profile_templates row for this run (optional).
+            Falls back to the user's is_active=true row when omitted.
+        simulation_id: Reuse an existing simulation id to roll up multiple
+            calls into one logical batch (optional).
         persona_kwargs: stringified-JSON kwargs passed to every agent turn and serialised to the backend as a custom profile (optional)
-        
+
     Returns:
         List of simulation results
     """
@@ -1295,6 +1313,8 @@ def run_simulations(
                 context=context,
                 goal=goal,
                 rules=rules,
+                template_id=template_id,
+                simulation_id=simulation_id,
                 persona_kwargs=persona_kwargs,
             )
         )
@@ -1309,6 +1329,50 @@ def run_simulations(
                 context=context,
                 goal=goal,
                 rules=rules,
+                template_id=template_id,
+                simulation_id=simulation_id,
                 persona_kwargs=persona_kwargs,
             )
         )
+
+
+async def alist_templates(
+    *,
+    api_key: str,
+    base_url: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Async: list the caller's profile_templates.
+
+    Returns a list of dicts with keys: ``id``, ``name``, ``description``,
+    ``is_active``. Use the returned ``id`` to pin a template via the
+    ``template_id`` kwarg on ``run_simulations`` / ``arun_simulations``.
+    """
+    if base_url is None:
+        base_url = _DEFAULT_BASE_URL
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(headers=headers, timeout=Timeout(30)) as client:
+        resp = await client.get(f"{base_url.rstrip('/')}/templates")
+        resp.raise_for_status()
+        return resp.json().get("templates", [])
+
+
+def list_templates(
+    *,
+    api_key: str,
+    base_url: Optional[str] = None,
+):
+    """Sync: list the caller's profile_templates.
+
+    Wraps ``alist_templates``. Mirrors the ``run_simulations`` sync-wrapper
+    pattern: runs in a fresh event loop when called from sync code, or
+    schedules a task on the running loop when called from async code.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(alist_templates(api_key=api_key, base_url=base_url))
+    else:
+        return loop.create_task(alist_templates(api_key=api_key, base_url=base_url))
