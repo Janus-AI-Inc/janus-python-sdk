@@ -841,6 +841,7 @@ async def arun_simulations(
     goal: Optional[str] = None,
     rules: Optional[Sequence[str]] = None,
     template_id: Optional[str] = None,
+    test_case_id: Optional[str] = None,
     simulation_id: Optional[str] = None,
     # Internal parameters (hidden from main API)
     enabled_judges: Optional[Sequence[str]] = ("rule",),
@@ -864,6 +865,10 @@ async def arun_simulations(
         template_id: Pin a specific profile_templates row for this run (optional).
             When omitted, the backend falls back to the user's is_active=true row.
             Use list_templates() to discover available ids.
+        test_case_id: Override the test case bound to the resolved template for
+            this run (optional). Lets one SDK call target a specific test case
+            under a template that has several attached. Unowned ids are silently
+            ignored by the backend (template's default test case is kept).
         simulation_id: Reuse an existing simulation id to roll up multiple
             arun_simulations calls into one logical batch (optional).
         persona_kwargs: stringified-JSON kwargs passed to every agent turn and serialised to the backend as a custom profile (optional)
@@ -896,6 +901,8 @@ async def arun_simulations(
     }
     if template_id:
         _headers["X-Janus-Template-Id"] = template_id
+    if test_case_id:
+        _headers["X-Janus-Test-Case-Id"] = test_case_id
 
     # Register run for status tracking + check credits upfront.
     #
@@ -1275,6 +1282,7 @@ def run_simulations(
     goal: Optional[str] = None,
     rules: Optional[Sequence[str]] = None,
     template_id: Optional[str] = None,
+    test_case_id: Optional[str] = None,
     simulation_id: Optional[str] = None,
     persona_kwargs: Optional[Dict[str, str]] = None,
 ):
@@ -1293,6 +1301,9 @@ def run_simulations(
         rules: Rules for evaluation (optional)
         template_id: Pin a specific profile_templates row for this run (optional).
             Falls back to the user's is_active=true row when omitted.
+        test_case_id: Override the test case bound to the resolved template for
+            this run (optional). Lets one SDK call target a specific test case
+            under a template that has several attached.
         simulation_id: Reuse an existing simulation id to roll up multiple
             calls into one logical batch (optional).
         persona_kwargs: stringified-JSON kwargs passed to every agent turn and serialised to the backend as a custom profile (optional)
@@ -1314,6 +1325,7 @@ def run_simulations(
                 goal=goal,
                 rules=rules,
                 template_id=template_id,
+                test_case_id=test_case_id,
                 simulation_id=simulation_id,
                 persona_kwargs=persona_kwargs,
             )
@@ -1330,6 +1342,7 @@ def run_simulations(
                 goal=goal,
                 rules=rules,
                 template_id=template_id,
+                test_case_id=test_case_id,
                 simulation_id=simulation_id,
                 persona_kwargs=persona_kwargs,
             )
