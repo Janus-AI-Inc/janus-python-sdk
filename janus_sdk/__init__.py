@@ -841,7 +841,6 @@ async def arun_simulations(
     goal: Optional[str] = None,
     rules: Optional[Sequence[str]] = None,
     template_id: Optional[str] = None,
-    simulation_id: Optional[str] = None,
     # Internal parameters (hidden from main API)
     enabled_judges: Optional[Sequence[str]] = ("rule",),
     num_judges: int = 3,
@@ -864,8 +863,6 @@ async def arun_simulations(
         template_id: Pin a specific profile_templates row for this run (optional).
             When omitted, the backend falls back to the user's is_active=true row.
             Use list_templates() to discover available ids.
-        simulation_id: Reuse an existing simulation id to roll up multiple
-            arun_simulations calls into one logical batch (optional).
         persona_kwargs: stringified-JSON kwargs passed to every agent turn and serialised to the backend as a custom profile (optional)
 
     Returns:
@@ -882,8 +879,8 @@ async def arun_simulations(
     if auto_init_tracing and not _TRACING_INITIALIZED:
         init_tracing(base_url, api_key)
 
-    # Generate simulation ID (reuse caller-provided id for multi-template rollup)
-    simulation_id = simulation_id or uuid.uuid4().hex
+    # Generate simulation ID
+    simulation_id = uuid.uuid4().hex
     _log.info(f"Starting simulation batch with ID: {simulation_id}")
 
     # Shared header set: Authorization on every request, plus an optional
@@ -1275,7 +1272,6 @@ def run_simulations(
     goal: Optional[str] = None,
     rules: Optional[Sequence[str]] = None,
     template_id: Optional[str] = None,
-    simulation_id: Optional[str] = None,
     persona_kwargs: Optional[Dict[str, str]] = None,
 ):
     """Run multiple AI agent simulations synchronously.
@@ -1293,8 +1289,6 @@ def run_simulations(
         rules: Rules for evaluation (optional)
         template_id: Pin a specific profile_templates row for this run (optional).
             Falls back to the user's is_active=true row when omitted.
-        simulation_id: Reuse an existing simulation id to roll up multiple
-            calls into one logical batch (optional).
         persona_kwargs: stringified-JSON kwargs passed to every agent turn and serialised to the backend as a custom profile (optional)
 
     Returns:
@@ -1314,7 +1308,6 @@ def run_simulations(
                 goal=goal,
                 rules=rules,
                 template_id=template_id,
-                simulation_id=simulation_id,
                 persona_kwargs=persona_kwargs,
             )
         )
@@ -1330,7 +1323,6 @@ def run_simulations(
                 goal=goal,
                 rules=rules,
                 template_id=template_id,
-                simulation_id=simulation_id,
                 persona_kwargs=persona_kwargs,
             )
         )
